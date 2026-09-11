@@ -353,8 +353,16 @@ impl ClientRequest {
                 // Sync is always in its own request. This ensures
                 // we can handle ReadyForQuery separately from query results.
                 'S' => {
-                    // Push any accumulated messages first
+                    // Push any accumulated messages first. Postgres withholds
+                    // their responses until it sees a Flush or a Sync, and the Sync
+                    // below travels in its own request which isn't sent until this
+                    // one has been answered, so terminate this one with a Flush.
                     if !current_request.is_empty() {
+                        if let Some(last_message) = current_request.last()
+                            && last_message.code() != 'H'
+                        {
+                            current_request.messages.push(Flush.into());
+                        }
                         requests.push(std::mem::take(&mut current_request));
                     }
                     // Sync goes in its own request
