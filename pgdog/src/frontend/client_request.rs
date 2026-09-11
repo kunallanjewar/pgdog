@@ -467,10 +467,11 @@ mod test {
             panic!("Expected Bind message");
         }
 
-        // Third slice should contain: Describe("test")
+        // Third slice should contain: Describe("test"), Flush
         let third_slice = &splice[2];
-        assert_eq!(third_slice.len(), 1);
+        assert_eq!(third_slice.len(), 2);
         assert_eq!(third_slice[0].code(), 'D'); // Describe
+        assert_eq!(third_slice[1].code(), 'H'); // Flush, so Postgres sends the response
 
         // Fourth slice should contain: Sync (always separate)
         let fourth_slice = &splice[3];
@@ -583,6 +584,39 @@ mod test {
         let third_slice = &splice[2];
         assert_eq!(third_slice.len(), 1);
         assert_eq!(third_slice[0].code(), 'S'); // Sync
+    }
+
+    #[test]
+    fn test_trailing_describe_before_sync_gets_flush() {
+        // A pipeline that executes two statements, then describes the portal and syncs.
+        // The trailing Describe is split into its own request, so it needs a Flush:
+        // Postgres withholds the Describe response until Flush or Sync arrives, and the
+        // Sync is a separate request that is not sent until this one has been answered.
+        let messages = vec![
+            ProtocolMessage::from(Parse::named("test", "SELECT 1")),
+            Bind::new_statement("test").into(),
+            Execute::new().into(),
+            ProtocolMessage::from(Parse::named("test_1", "SELECT 2")),
+            Bind::new_statement("test_1").into(),
+            Execute::new().into(),
+            Describe::new_portal("").into(),
+            Sync::new().into(),
+        ];
+        let req = ClientRequest::from(messages);
+        let splice = req.split_extended().unwrap();
+        assert_eq!(splice.len(), 4);
+
+        // Describe gets its own request, terminated by Flush.
+        let describe_slice = &splice[2];
+        assert_eq!(describe_slice.len(), 2);
+        assert_eq!(describe_slice[0].code(), 'D'); // Describe
+        assert_eq!(describe_slice[1].code(), 'H'); // Flush
+        assert!(describe_slice.is_complete());
+
+        // Sync still goes out on its own.
+        let sync_slice = &splice[3];
+        assert_eq!(sync_slice.len(), 1);
+        assert_eq!(sync_slice[0].code(), 'S'); // Sync
     }
 
     #[test]
